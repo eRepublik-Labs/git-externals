@@ -1,0 +1,442 @@
+#!/bin/bash
+
+# GitExternals
+# Version: 2025.3.7
+# Author: Alexandru Geana <alex.geana@erepubliklabs.com>
+#
+# This script is used to clone or update git repositories defined in a .gitexternals file.
+# The .gitexternals file should be in the root of the repository and have the following format:
+# [external "name"]
+# path = path/to/clone/repository
+# url =
+# branch = master
+# script = script_to_run_after_cloning_or_updating.sh
+
+# Default update URL - change this to your own repository
+DEFAULT_UPDATE_URL="https://raw.githubusercontent.com/eRepublik-Labs/git-externals/master/init"
+
+# Function to display text in bold
+bold_text() {
+    local text="$1"
+    printf "\e[1m%s\e[0m\n" "$text"
+}
+
+# Functions to display colored text
+red_text() {
+    local text="$1"
+    printf "\e[31m%s\e[0m\n" "$text"
+}
+
+green_text() {
+    local text="$1"
+    printf "\e[32m%s\e[0m\n" "$text"
+}
+
+yellow_text() {
+    local text="$1"
+    printf "\e[33m%s\e[0m\n" "$text"
+}
+
+blue_text() {
+    local text="$1"
+    printf "\e[34m%s\e[0m\n" "$text"
+}
+
+magenta_text() {
+    local text="$1"
+    printf "\e[35m%s\e[0m\n" "$text"
+}
+
+cyan_text() {
+    local text="$1"
+    printf "\e[36m%s\e[0m\n" "$text"
+}
+
+# Check for required dependencies
+check_dependencies() {
+    local missing=false
+    
+    if ! command -v rsync &> /dev/null; then
+        red_text "Error: rsync is required but not installed."
+        missing=true
+    fi
+    
+    if [ "$missing" = true ]; then
+        exit 1
+    fi
+}
+
+# Function to compare version strings
+version_gt() { 
+    test "$(printf '%s\n' "$@" | sort -V | head -n1)" != "$1"
+}
+
+# Function to extract version from script
+extract_version() {
+    local file="$1"
+    grep "^# Version:" "$file" | sed -E 's/^# Version: (.*)/\1/'
+}
+
+# Function to install git hook
+install_hook() {
+    bold_text "Installing Git post-merge hook..."
+    
+    # Get the git hooks directory
+    local hooks_dir
+    hooks_dir=$(git rev-parse --git-path hooks)
+    
+    if [ ! -d "$hooks_dir" ]; then
+        red_text "Error: Git hooks directory not found. Are you in a git repository?"
+        return 1
+    fi
+    
+    local hook_file="$hooks_dir/post-merge"
+    local script_path
+    script_path=$(realpath "$0")
+    
+    # Check if hook already exists
+    if [ -f "$hook_file" ]; then
+        # Check if our hook is already installed
+        if grep -q "$script_path" "$hook_file"; then
+            yellow_text "Hook already installed."
+            return 0
+        else
+            # Backup existing hook
+            yellow_text "Existing hook found. Creating backup."
+            cp "$hook_file" "$hook_file.bak"
+        fi
+    fi
+    
+    # Create the hook
+    cat > "$hook_file" << EOF
+#!/bin/sh
+#
+# Git Externals post-merge hook
+# Automatically updates externals after git pull/merge
+
+# Run the git-externals script
+"$script_path"
+
+# Exit with the script's exit code
+exit \$?
+EOF
+    
+    # Make the hook executable
+    chmod +x "$hook_file"
+    
+    green_text "✅ Post-merge hook installed successfully!"
+    green_text "Externals will now update automatically after git pull/merge operations."
+    return 0
+}
+
+# Function to update the script itself
+self_update() {
+    bold_text "ℹ️ Checking for updates..."
+    
+    # Check for curl
+    if ! command -v curl &> /dev/null; then
+        red_text "Error: curl is required for self-update but not installed."
+        return 1
+    fi
+    
+    # Use default update URL
+    local update_url="$DEFAULT_UPDATE_URL"
+    
+    bold_text "Using update URL: $update_url"
+    
+    # Create temp file
+    local tmp_file
+    tmp_file=$(mktemp)
+    
+    # Download latest version
+    if ! curl --connect-timeout 10 -s -L "$update_url" -o "$tmp_file"; then
+        red_text "⛔️ Failed to download update from $update_url"
+        rm -f "$tmp_file"
+        return 1
+    fi
+    
+    # Check if download was successful and file is not empty
+    if [ ! -s "$tmp_file" ]; then
+        red_text "⚠ Downloaded file is empty. This might be because:"
+        red_text "1. The URL is incorrect"
+        red_text "2. Network issues"
+        rm -f "$tmp_file"
+        return 1
+    fi
+    
+    # Extract versions
+    local current_version
+    current_version=$(extract_version "$0")
+    local new_version
+    new_version=$(extract_version "$tmp_file")
+    
+    bold_text "- Current version: $current_version"
+    bold_text "- Latest version: $new_version"
+    
+    # Compare versions
+    if version_gt "$new_version" "$current_version"; then
+        green_text "New version available! Updating..."
+        
+        # Make the new script executable
+        chmod +x "$tmp_file"
+        
+        # Replace current script with new version
+        if mv -f "$tmp_file" "$0"; then
+            green_text "✅ Update successful! Now running version $new_version"
+            return 0
+        else
+            red_text "❌ Failed to replace current script. Check permissions."
+            return 1
+        fi
+    else
+        yellow_text "Already running the latest version."
+        rm -f "$tmp_file"
+        return 0
+    fi
+}
+
+# Function to clone or update a repository
+clone_or_update_repo() {
+    local path="$1"
+    local url="$2"
+    local branch="$3"
+    local script="$4"
+    local name="$5"
+    local lfs="$6"  # Add LFS flag parameter
+
+    echo ""
+    
+    # Use the external name for the cache directory
+    local git_dir=$(git rev-parse --git-dir)
+    local repo_cache_dir="$git_dir/externals/$name"
+    
+    # Ensure the externals directory exists
+    mkdir -p "$git_dir/externals"
+    
+    if [ -d "$repo_cache_dir" ]; then
+        bold_text "🔵 Repository cache exists. Updating repository."
+        cd "$repo_cache_dir"
+        git fetch origin
+        git reset --hard "origin/$branch"
+        git clean -fdx
+        # Pull LFS objects if repo is LFS-enabled
+        if [ "$lfs" = "true" ]; then
+            bold_text "📦 Pulling LFS objects..."
+            if command -v git-lfs &> /dev/null; then
+                git lfs pull
+            else
+                yellow_text "⚠️ git-lfs not installed, skipping LFS pull"
+            fi
+        fi
+        cd - > /dev/null
+    else
+        bold_text "⬇️ Cloning git repository $url to cache with depth 1 and blob filtering"
+        git clone --branch "$branch" --depth 1 --filter=blob:none "$url" "$repo_cache_dir"
+        # Initialize LFS and pull objects if repo is LFS-enabled
+        if [ "$lfs" = "true" ]; then
+            bold_text "📦 Initializing LFS and pulling objects..."
+            if command -v git-lfs &> /dev/null; then
+                cd "$repo_cache_dir"
+                git lfs install
+                git lfs pull
+                cd - > /dev/null
+            else
+                yellow_text "⚠️ git-lfs not installed, skipping LFS initialization"
+            fi
+        fi
+    fi
+    
+    # Ensure the target directory exists
+    mkdir -p "$(dirname "$path")"
+    
+    # Check if the target directory already exists
+    if [ -d "$path" ]; then
+        bold_text "🗑️ Removing existing files in $path"
+        # Keep .gitignore and other important files if needed
+        find "$path" -mindepth 1 -not -name ".gitignore" -exec rm -rf {} \; 2>/dev/null || true
+    else
+        bold_text "📁 Creating target directory $path"
+        mkdir -p "$path"
+    fi
+    
+    # Copy files from cache to target path (excluding .git directory)
+    bold_text "📋 Copying files from cache to $path"
+    rsync -a --exclude='.git' "$repo_cache_dir/" "$path/"
+    
+    # Create a .gitexternal file to track where this came from
+    cat > "$path/.gitexternal" << EOF
+# This directory contains files from an external repository
+# DO NOT MODIFY THESE FILES DIRECTLY
+# 
+# External: $name
+# Source: $url
+# Branch: $branch
+# Last updated: $(date)
+EOF
+    
+    if [ -n "$script" ]; then
+        script_path="$(dirname "$0")/$script"
+        echo "script_path: $script_path"
+        # Check if the script exists
+        if [ -f "$script_path" ]; then
+            # Check if the script is executable, if not, make it executable
+            if [ ! -x "$script_path" ]; then
+                yellow_text "⚠️ Script $script_path is not executable. Changing permissions."
+                chmod +x "$script_path"
+            fi
+            green_text "🟢 Running script $script for $path"
+            "$script_path"
+        else
+            red_text "🔴 Script $script not found at $script_path"
+        fi
+    else
+        green_text "🟢 No script defined for $path"
+    fi
+}
+
+# Function to parse a line
+parse_line() {
+    local line="$1"
+    local key="$2"
+    local value
+    
+    if [[ "$line" =~ ^[[:space:]]*$key[[:space:]]*=[[:space:]]*(.*)[[:space:]]*$ ]]; then
+        value="${BASH_REMATCH[1]}"
+    else
+        red_text "❌ Failed to parse $key from line: $line"
+    fi
+    
+    echo "$value"
+}
+
+# Function to process a single external
+process_external() {
+    local name="$1"
+    local path="$2"
+    local url="$3"
+    local branch="$4"
+    local script="$5"
+    local lfs="$6" 
+    
+    cyan_text "- Processing external: $name"
+    cyan_text "- Path: $path"
+    cyan_text "- URL: $url"
+    cyan_text "- Branch: $branch"
+    cyan_text "- Script: $script"
+    cyan_text "- LFS: $lfs"
+    
+    if [ -n "$name" ]; then
+        clone_or_update_repo "$path" "$url" "$branch" "$script" "$name" "$lfs"
+    fi
+}
+
+# Function to parse the .gitexternals file
+parse_gitexternals() {
+    local file=".gitexternals"
+    local name=""
+    local path=""
+    local url=""
+    local branch=""
+    local script=""
+    local lfs="false"  # Default LFS to false
+    
+    yellow_text "Parsing .gitexternals file..."
+    
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip empty lines or lines with only whitespace
+        if [[ -z "${line// }" ]]; then
+            continue
+        fi
+        
+        if [[ "$line" =~ ^\[external[[:space:]]\"(.*)\"\][[:space:]]*$ ]]; then
+            if [ -n "$name" ]; then
+                process_external "$name" "$path" "$url" "$branch" "$script" "$lfs"
+            fi
+            
+            name="${BASH_REMATCH[1]}"
+            path=""
+            url=""
+            branch="master"
+            script=""
+            lfs="false"  # Reset LFS flag for new external
+        else
+            key=$(echo "$line" | sed -E 's/^[[:space:]]*([^[:space:]=]+)[[:space:]]*=.*$/\1/')
+            
+            case "$key" in
+                path)
+                    path=$(parse_line "$line" "path")
+                    ;;
+                url)
+                    url=$(parse_line "$line" "url")
+                    ;;
+                branch)
+                    branch=$(parse_line "$line" "branch")
+                    ;;
+                script)
+                    script=$(parse_line "$line" "script")
+                    ;;
+                lfs)
+                    lfs=$(parse_line "$line" "lfs")
+                    ;;
+                *)
+                    red_text "Unknown key: $key"
+                    ;;
+            esac
+        fi
+    done < "$file"
+    
+    # Process the last external if any
+    if [ -n "$name" ]; then
+        process_external "$name" "$path" "$url" "$branch" "$script" "$lfs"
+    fi
+    
+    bold_text "Finished parsing .gitexternals file."
+}
+
+# Function to show help
+show_help() {
+    bold_text "GitExternals - A tool to manage git externals"
+    echo ""
+    echo "Usage: $(basename "$0") [command]"
+    echo ""
+    echo "Commands:"
+    echo "  (no command)   Parse .gitexternals file and clone/update repositories"
+    echo "  update         Update this script to the latest version"
+    echo "  install-hook   Install git post-merge hook for automatic updates"
+    echo "  help           Show this help message"
+    echo ""
+}
+
+
+cd "$(dirname "$0")"
+
+# Check dependencies
+check_dependencies
+
+# Parse command line arguments
+if [ $# -gt 0 ]; then
+    case "$1" in
+        update)
+            self_update
+            exit $?
+            ;;
+        install-hook)
+            install_hook
+            exit $?
+            ;;
+        help|--help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            yellow_text "Unknown command: $1"
+            show_help
+            exit 1
+            ;;
+    esac
+else
+    self_update
+fi
+
+# Main script
+parse_gitexternals
