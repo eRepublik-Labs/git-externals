@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # GitExternals
-# Version: 2025.4.0
+# Version: 2025.4.1
 # Author: Alexandru Geana <alex.geana@erepubliklabs.com>
 #
 # This script is used to clone or update git repositories defined in a .gitexternals file.
@@ -183,6 +183,7 @@ self_update() {
         # Replace current script with new version
         if mv -f "$tmp_file" "$0"; then
             green_text "✅ Update successful! Now running version $new_version"
+            exec "$0" "$@"
             return 0
         else
             red_text "❌ Failed to replace current script. Check permissions."
