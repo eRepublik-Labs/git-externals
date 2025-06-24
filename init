@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # GitExternals
-# Version: 2025.4.2
+# Version: 2025.6.0
 # Author: Alexandru Geana <alex.geana@erepubliklabs.com>
 #
 # This script is used to clone or update git repositories defined in a .gitexternals file.
@@ -223,7 +223,7 @@ clone_or_update_repo() {
         cd "$repo_cache_dir"
         
         # Check if the remote is accessible
-        if ! git fetch origin; then
+        if ! git fetch origin "$branch"; then
             red_text "⚠️ Failed to fetch from remote. Check network or repository access."
             cd - > /dev/null
             return 1
