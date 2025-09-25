@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # GitExternals
-# Version: 2025.6.1
+# Version: 2025.9.0
 # Author: Alexandru Geana <alex.geana@erepubliklabs.com>
 #
 # This script is used to clone or update git repositories defined in a .gitexternals file.
@@ -11,6 +11,8 @@
 # url =
 # branch = master
 # script = script_to_run_after_cloning_or_updating.sh
+# ignore_extensions = *.meta,*.asset  # Optional: comma-separated list of patterns to ignore during deletion
+# lfs = true/false  # Optional: enable LFS support (default: false)
 
 # Default update URL - change this to your own repository
 DEFAULT_UPDATE_URL="https://raw.githubusercontent.com/eRepublik-Labs/git-externals/master/init"
@@ -130,7 +132,6 @@ EOF
 }
 
 # Function to update the script itself
-# Function to update the script itself
 self_update() {
     bold_text "ℹ️ Checking for updates..."
     
@@ -207,7 +208,8 @@ clone_or_update_repo() {
     local branch="$3"
     local script="$4"
     local name="$5"
-    local lfs="$6"  # Add LFS flag parameter
+    local lfs="$6"
+    local ignore_extensions="$7"  # Add ignore_extensions parameter
 
     echo ""
     
@@ -271,9 +273,28 @@ clone_or_update_repo() {
     
     # Check if the target directory already exists
     if [ -d "$path" ]; then
-        bold_text "🗑️ Removing existing files in $path"
-        # Keep .gitignore and other important files if needed
-        find "$path" -mindepth 1 -not -name ".gitignore" -exec rm -rf {} \; 2>/dev/null || true
+        bold_text "🗑️ Removing existing files in $path (preserving ignored extensions)"
+        
+        # Build the find command with exclusions
+        local find_cmd="find \"$path\" -mindepth 1 -not -name \".gitignore\""
+        
+        # Add exclusions for ignored extensions
+        if [ -n "$ignore_extensions" ]; then
+            yellow_text "📌 Preserving files with extensions: $ignore_extensions"
+            # Convert comma-separated list to array
+            IFS=',' read -ra IGNORED_EXTS <<< "$ignore_extensions"
+            for ext in "${IGNORED_EXTS[@]}"; do
+                # Trim whitespace
+                ext=$(echo "$ext" | xargs)
+                if [ -n "$ext" ]; then
+                    find_cmd="$find_cmd -not -name \"$ext\""
+                fi
+            done
+        fi
+        
+        # Execute the find command and delete
+        find_cmd="$find_cmd -exec rm -rf {} \; 2>/dev/null || true"
+        eval "$find_cmd"
     else
         bold_text "📁 Creating target directory $path"
         mkdir -p "$path"
@@ -293,6 +314,11 @@ clone_or_update_repo() {
 # Branch: $branch
 # Last updated: $(date)
 EOF
+    
+    # Add ignored extensions info if present
+    if [ -n "$ignore_extensions" ]; then
+        echo "# Preserved extensions: $ignore_extensions" >> "$path/.gitexternal"
+    fi
     
     if [ -n "$script" ]; then
         script_path="$(dirname "$0")/$script"
@@ -336,7 +362,8 @@ process_external() {
     local url="$3"
     local branch="$4"
     local script="$5"
-    local lfs="$6" 
+    local lfs="$6"
+    local ignore_extensions="$7"
     
     cyan_text "- Processing external: $name"
     cyan_text "- Path: $path"
@@ -344,9 +371,10 @@ process_external() {
     cyan_text "- Branch: $branch"
     cyan_text "- Script: $script"
     cyan_text "- LFS: $lfs"
+    cyan_text "- Ignore Extensions: $ignore_extensions"
     
     if [ -n "$name" ]; then
-        clone_or_update_repo "$path" "$url" "$branch" "$script" "$name" "$lfs"
+        clone_or_update_repo "$path" "$url" "$branch" "$script" "$name" "$lfs" "$ignore_extensions"
     fi
 }
 
@@ -358,7 +386,8 @@ parse_gitexternals() {
     local url=""
     local branch=""
     local script=""
-    local lfs="false"  # Default LFS to false
+    local lfs="false"
+    local ignore_extensions=""
     
     yellow_text "Parsing .gitexternals file..."
     
@@ -370,7 +399,7 @@ parse_gitexternals() {
         
         if [[ "$line" =~ ^\[external[[:space:]]\"(.*)\"\][[:space:]]*$ ]]; then
             if [ -n "$name" ]; then
-                process_external "$name" "$path" "$url" "$branch" "$script" "$lfs"
+                process_external "$name" "$path" "$url" "$branch" "$script" "$lfs" "$ignore_extensions"
             fi
             
             name="${BASH_REMATCH[1]}"
@@ -378,7 +407,8 @@ parse_gitexternals() {
             url=""
             branch="master"
             script=""
-            lfs="false"  # Reset LFS flag for new external
+            lfs="false"
+            ignore_extensions=""  # Reset ignore_extensions for new external
         else
             key=$(echo "$line" | sed -E 's/^[[:space:]]*([^[:space:]=]+)[[:space:]]*=.*$/\1/')
             
@@ -398,6 +428,9 @@ parse_gitexternals() {
                 lfs)
                     lfs=$(parse_line "$line" "lfs")
                     ;;
+                ignore_extensions)
+                    ignore_extensions=$(parse_line "$line" "ignore_extensions")
+                    ;;
                 *)
                     red_text "Unknown key: $key"
                     ;;
@@ -407,7 +440,7 @@ parse_gitexternals() {
     
     # Process the last external if any
     if [ -n "$name" ]; then
-        process_external "$name" "$path" "$url" "$branch" "$script" "$lfs"
+        process_external "$name" "$path" "$url" "$branch" "$script" "$lfs" "$ignore_extensions"
     fi
     
     bold_text "Finished parsing .gitexternals file."
@@ -425,8 +458,16 @@ show_help() {
     echo "  install-hook   Install git post-merge hook for automatic updates"
     echo "  help           Show this help message"
     echo ""
+    echo ".gitexternals file format:"
+    echo "  [external \"name\"]"
+    echo "  path = path/to/clone/repository"
+    echo "  url = git@github.com:user/repo.git"
+    echo "  branch = master"
+    echo "  script = script_to_run.sh           # Optional"
+    echo "  lfs = true                           # Optional (default: false)"
+    echo "  ignore_extensions = *.meta,*.asset   # Optional: patterns to preserve"
+    echo ""
 }
-
 
 cd "$(dirname "$0")"
 
