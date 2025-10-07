@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # GitExternals
-# Version: 2025.9.0
+# Version: 2025.10.0
 # Author: Alexandru Geana <alex.geana@erepubliklabs.com>
 #
 # This script is used to clone or update git repositories defined in a .gitexternals file.
@@ -13,6 +13,11 @@
 # script = script_to_run_after_cloning_or_updating.sh
 # ignore_extensions = *.meta,*.asset  # Optional: comma-separated list of patterns to ignore during deletion
 # lfs = true/false  # Optional: enable LFS support (default: false)
+#
+# Auto-update can be disabled by:
+# 1. Setting environment variable: export GITEXTERNALS_NO_UPDATE=1
+# 2. Creating .gitexternals.conf with: auto_update = false
+# 3. Using --no-update flag when running the script
 
 # Default update URL - change this to your own repository
 DEFAULT_UPDATE_URL="https://raw.githubusercontent.com/eRepublik-Labs/git-externals/master/init"
@@ -79,6 +84,33 @@ extract_version() {
     grep "^# Version:" "$file" | sed -E 's/^# Version: (.*)/\1/'
 }
 
+# Function to check if auto-update is disabled
+is_auto_update_disabled() {
+    # Check environment variable
+    if [ "${GITEXTERNALS_NO_UPDATE:-0}" = "1" ]; then
+        yellow_text "⏸️  Auto-update disabled via environment variable"
+        return 0
+    fi
+    
+    # Check config file
+    if [ -f ".gitexternals.conf" ]; then
+        local auto_update_setting
+        auto_update_setting=$(grep -E "^[[:space:]]*auto_update[[:space:]]*=" ".gitexternals.conf" 2>/dev/null | sed -E 's/^[[:space:]]*auto_update[[:space:]]*=[[:space:]]*(.*)[[:space:]]*$/\1/')
+        if [ "$auto_update_setting" = "false" ] || [ "$auto_update_setting" = "0" ] || [ "$auto_update_setting" = "no" ]; then
+            yellow_text "⏸️  Auto-update disabled via .gitexternals.conf"
+            return 0
+        fi
+    fi
+    
+    # Check for global flag
+    if [ "${SKIP_AUTO_UPDATE:-0}" = "1" ]; then
+        yellow_text "⏸️  Auto-update disabled for this run"
+        return 0
+    fi
+    
+    return 1
+}
+
 # Function to install git hook
 install_hook() {
     bold_text "Installing Git post-merge hook..."
@@ -116,8 +148,8 @@ install_hook() {
 # Git Externals post-merge hook
 # Automatically updates externals after git pull/merge
 
-# Run the git-externals script
-"$script_path"
+# Run the git-externals script (with --no-update to avoid auto-updating the script itself in hooks)
+"$script_path" --no-update
 
 # Exit with the script's exit code
 exit \$?
@@ -133,6 +165,11 @@ EOF
 
 # Function to update the script itself
 self_update() {
+    # Check if auto-update is disabled
+    if is_auto_update_disabled; then
+        return 0
+    fi
+    
     bold_text "ℹ️ Checking for updates..."
     
     # Check for curl
@@ -450,13 +487,16 @@ parse_gitexternals() {
 show_help() {
     bold_text "GitExternals - A tool to manage git externals"
     echo ""
-    echo "Usage: $(basename "$0") [command]"
+    echo "Usage: $(basename "$0") [options] [command]"
     echo ""
     echo "Commands:"
-    echo "  (no command)   Parse .gitexternals file and clone/update repositories"
-    echo "  update         Update this script to the latest version"
-    echo "  install-hook   Install git post-merge hook for automatic updates"
-    echo "  help           Show this help message"
+    echo "  (no command)     Parse .gitexternals file and clone/update repositories"
+    echo "  update           Manually check and update this script to the latest version"
+    echo "  install-hook     Install git post-merge hook for automatic updates"
+    echo "  help             Show this help message"
+    echo ""
+    echo "Options:"
+    echo "  --no-update      Skip auto-update check for this run"
     echo ""
     echo ".gitexternals file format:"
     echo "  [external \"name\"]"
@@ -467,6 +507,44 @@ show_help() {
     echo "  lfs = true                           # Optional (default: false)"
     echo "  ignore_extensions = *.meta,*.asset   # Optional: patterns to preserve"
     echo ""
+    echo "Disabling auto-update:"
+    echo "  1. Set environment variable: export GITEXTERNALS_NO_UPDATE=1"
+    echo "  2. Create .gitexternals.conf with: auto_update = false"
+    echo "  3. Use --no-update flag when running the script"
+    echo ""
+}
+
+# Function to create sample config file
+create_sample_config() {
+    local config_file=".gitexternals.conf"
+    
+    if [ -f "$config_file" ]; then
+        yellow_text "Config file already exists: $config_file"
+        return 1
+    fi
+    
+    cat > "$config_file" << 'EOF'
+# GitExternals Configuration File
+# This file controls the behavior of the git-externals script
+
+# Enable or disable automatic updates of the script
+# Values: true/false, yes/no, 1/0
+# Default: true
+auto_update = true
+
+# Update URL (optional)
+# Override the default update URL for the script
+# update_url = https://example.com/path/to/script
+
+# Verbose output (optional)
+# Values: true/false, yes/no, 1/0
+# Default: false
+# verbose = false
+EOF
+    
+    green_text "✅ Created sample configuration file: $config_file"
+    cyan_text "Edit this file to customize GitExternals behavior."
+    return 0
 }
 
 cd "$(dirname "$0")"
@@ -475,29 +553,63 @@ cd "$(dirname "$0")"
 check_dependencies
 
 # Parse command line arguments
-if [ $# -gt 0 ]; then
+SKIP_AUTO_UPDATE=0
+COMMAND=""
+
+while [[ $# -gt 0 ]]; do
     case "$1" in
+        --no-update)
+            SKIP_AUTO_UPDATE=1
+            shift
+            ;;
         update)
-            self_update
-            exit $?
+            COMMAND="update"
+            shift
             ;;
         install-hook)
-            install_hook
-            exit $?
+            COMMAND="install-hook"
+            shift
+            ;;
+        create-config)
+            COMMAND="create-config"
+            shift
             ;;
         help|--help|-h)
-            show_help
-            exit 0
+            COMMAND="help"
+            shift
             ;;
         *)
-            yellow_text "Unknown command: $1"
+            yellow_text "Unknown option: $1"
             show_help
             exit 1
             ;;
     esac
-else
-    self_update
-fi
+done
 
-# Main script
-parse_gitexternals
+# Execute command
+case "$COMMAND" in
+    update)
+        # Force update even if disabled
+        GITEXTERNALS_NO_UPDATE=0
+        SKIP_AUTO_UPDATE=0
+        self_update
+        exit $?
+        ;;
+    install-hook)
+        install_hook
+        exit $?
+        ;;
+    create-config)
+        create_sample_config
+        exit $?
+        ;;
+    help)
+        show_help
+        exit 0
+        ;;
+    *)
+        # Default action: run auto-update (if not disabled) then parse gitexternals
+        self_update
+        parse_gitexternals
+        ;;
+esac
