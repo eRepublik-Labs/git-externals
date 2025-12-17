@@ -36,12 +36,9 @@ sudo mv init /usr/local/bin/git-externals
 
 ### Dependencies
 
-The script requires the following tools to be installed:
-
-- `rsync` - For efficient file copying
 - `git-lfs` - Only required for repositories with LFS support enabled
 
-On most Linux distributions and macOS, rsync is already installed. Git LFS can be installed following [the official instructions](https://git-lfs.github.com/).
+Git LFS can be installed following [the official instructions](https://git-lfs.github.com/).
 
 ## Usage
 
